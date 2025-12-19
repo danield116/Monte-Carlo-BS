@@ -21,13 +21,14 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, asdict
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 from pathlib import Path
-BASE_DIR = Path(__file__).resolve().parent
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+BASE_DIR = Path(__file__).resolve().parent
 
 
 # ----------------------------- Config -----------------------------
@@ -56,12 +57,17 @@ class SelectionConfig:
 # ----------------------------- Helpers -----------------------------
 
 def nearest_value(values: np.ndarray, target: float) -> float:
+    """Return the array element closest to target."""
     if values.size == 0:
         raise ValueError("Empty strike list.")
     return float(values[np.argmin(np.abs(values - target))])
 
 
-def pick_expiration_by_dte(expirations, target_dte):
+def pick_expiration_by_dte(expirations, target_dte, today: pd.Timestamp) -> Optional[str]:
+    """
+    Pick the expiration date whose DTE (days-to-expiry) is closest to target_dte,
+    using a provided 'today' anchor for reproducibility.
+    """
     if not expirations:
         return None
 
@@ -69,8 +75,6 @@ def pick_expiration_by_dte(expirations, target_dte):
     exp_dt = exp_dt[~pd.isna(exp_dt)]
     if len(exp_dt) == 0:
         return None
-
-    today = pd.Timestamp.today().normalize()
 
     # TimedeltaIndex -> use .days (no .dt)
     dtes = (exp_dt - today).days
@@ -90,6 +94,7 @@ def pick_expiration_by_dte(expirations, target_dte):
 
 
 def safe_history(ticker: yf.Ticker, start: str, end: Optional[str]) -> pd.DataFrame:
+    """yfinance history wrapper that fails gracefully."""
     try:
         df = ticker.history(start=start, end=end, auto_adjust=False)
         if df is None or df.empty:
@@ -103,13 +108,22 @@ def safe_history(ticker: yf.Ticker, start: str, end: Optional[str]) -> pd.DataFr
 # ----------------------------- Selection -----------------------------
 
 def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFrame:
+    """
+    Select a reproducible set of option contracts for one underlying, based on:
+      - DTE targets (14/30/60/120)
+      - moneyness targets (ATM, 5%, 10%, 20% away)
+    """
     t = yf.Ticker(sym)
     expirations = list(getattr(t, "options", []) or [])
     if not expirations:
         return pd.DataFrame(columns=["underlying", "expiration", "right", "strike", "contractSymbol"])
 
-    # Spot: use last close (more stable than intraday)
-    spot_window_start = (pd.Timestamp.today() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    # Anchor selection date for reproducibility:
+    # If cfg.end is fixed, use that date; else fall back to "today".
+    today = pd.to_datetime(cfg.end).normalize() if cfg.end else pd.Timestamp.today().normalize()
+
+    # Spot: use last close from recent window (more stable than intraday)
+    spot_window_start = (today - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
     spot_hist = safe_history(t, start=spot_window_start, end=None)
     if spot_hist.empty:
         raise RuntimeError(f"Could not fetch underlying history for {sym}")
@@ -119,7 +133,7 @@ def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFr
     seen = set()
 
     for target_dte in cfg.target_dtes:
-        exp = pick_expiration_by_dte(expirations, target_dte)
+        exp = pick_expiration_by_dte(expirations, target_dte, today=today)
         if exp is None:
             continue
 
@@ -185,6 +199,9 @@ def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFr
 # ----------------------------- Download histories -----------------------------
 
 def download_contract_histories(selected: pd.DataFrame, cfg: SelectionConfig) -> pd.DataFrame:
+    """
+    For each selected contractSymbol, download daily OHLCV history and stack into one table.
+    """
     meta = selected.set_index("contractSymbol")[["underlying", "expiration", "right", "strike"]].to_dict("index")
     contracts = selected["contractSymbol"].drop_duplicates().tolist()
 
@@ -193,6 +210,7 @@ def download_contract_histories(selected: pd.DataFrame, cfg: SelectionConfig) ->
     for i, contract in enumerate(contracts, 1):
         print(f"[{i}/{len(contracts)}] {contract}")
         tk = yf.Ticker(contract)
+
         hist = safe_history(tk, start=cfg.start, end=cfg.end)
         time.sleep(cfg.sleep_s)
 
@@ -212,11 +230,11 @@ def download_contract_histories(selected: pd.DataFrame, cfg: SelectionConfig) ->
                 "expiration": m.get("expiration"),
                 "right": m.get("right"),
                 "strike": m.get("strike"),
-                "open": hist.get("Open", np.nan).astype(float),
-                "high": hist.get("High", np.nan).astype(float),
-                "low": hist.get("Low", np.nan).astype(float),
-                "close": hist.get("Close", np.nan).astype(float),
-                "volume": hist.get("Volume", np.nan).astype(float),
+                "open": pd.to_numeric(hist.get("Open", np.nan), errors="coerce"),
+                "high": pd.to_numeric(hist.get("High", np.nan), errors="coerce"),
+                "low": pd.to_numeric(hist.get("Low", np.nan), errors="coerce"),
+                "close": pd.to_numeric(hist.get("Close", np.nan), errors="coerce"),
+                "volume": pd.to_numeric(hist.get("Volume", np.nan), errors="coerce"),
             }
         )
         out_parts.append(part)
@@ -235,11 +253,17 @@ def download_contract_histories(selected: pd.DataFrame, cfg: SelectionConfig) ->
 
 def build_dataset(
     cfg: SelectionConfig,
-    selected_csv = BASE_DIR / "selected_contracts.csv"
-    history_csv  = BASE_DIR / "options_history_all.csv"
-    metadata_json = BASE_DIR / "dataset_metadata.json"
-
+    selected_csv=BASE_DIR / "selected_contracts.csv",
+    history_csv=BASE_DIR / "options_history_all.csv",
+    metadata_json=BASE_DIR / "dataset_metadata.json",
 ) -> None:
+    """
+    End-to-end build:
+      1) select contracts per underlying
+      2) save selected_contracts.csv
+      3) download per-contract histories and save options_history_all.csv
+      4) write dataset_metadata.json
+    """
     selected_parts = []
 
     for sym in cfg.underlyings:
@@ -265,8 +289,10 @@ def build_dataset(
     meta["built_at"] = pd.Timestamp.now().isoformat()
     meta["num_selected_contracts"] = int(selected["contractSymbol"].nunique())
     meta["num_history_rows"] = int(len(history))
+
     with open(metadata_json, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+
     print(f"Saved -> {metadata_json}")
 
 
