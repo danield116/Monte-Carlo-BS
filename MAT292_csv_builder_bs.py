@@ -81,7 +81,7 @@ def safe_history(ticker: yf.Ticker, start: str, end: Optional[str]) -> pd.DataFr
         return pd.DataFrame()
 
 
-# select contracts
+# select contracts to build the CSV underlying_contracts CSV file
 
 def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFrame:
     '''
@@ -96,10 +96,10 @@ def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFr
 
     today = pd.to_datetime(cfg.end).normalize() if cfg.end else pd.Timestamp.today().normalize()
 
-    spot_window_start = (today - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    spot_window_start = (today - pd.Timedelta(days=10)).strftime("%Y-%m-%d") #choosing a reasonable window for evaluation
     spot_hist = safe_history(t, start=spot_window_start, end=None)
     if spot_hist.empty:
-        raise RuntimeError(f"Could not fetch underlying history for {sym}")
+        raise RuntimeError(f"Could not fetch underlying history for {sym}") #edge case check
     spot = float(spot_hist["Close"].iloc[-1])
 
     picks = []
@@ -111,7 +111,7 @@ def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFr
             continue
 
         try:
-            chain = t.option_chain(exp)
+            chain = t.option_chain(exp) #pulling and matching dates and prices from the underlying and option
             calls = chain.calls.copy()
             puts = chain.puts.copy()
         except Exception:
@@ -123,8 +123,8 @@ def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFr
         call_strikes = calls["strike"].to_numpy(dtype=float)
         put_strikes = puts["strike"].to_numpy(dtype=float)
 
-        for m in cfg.moneyness:
-            targets = [spot * (1.0 + m)]
+        for m in cfg.moneyness: #moneyness evaluation mechanism to distribute evenly
+            targets = [spot * (1.0 + m)] 
             if m > 0:
                 targets.append(spot * (1.0 - m))
 
@@ -161,7 +161,7 @@ def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFr
     if df.empty:
         return df
 
-    df["spot"] = spot
+    df["spot"] = spot #comparing spot of the underlying and the strike as a moneyness metric
     df["abs_moneyness"] = np.abs(df["strike"] / df["spot"] - 1.0)
     df = df.sort_values(["expiration", "abs_moneyness", "right"]).head(cfg.max_contracts_per_underlying)
     df = df.drop(columns=["spot", "abs_moneyness"])
@@ -175,7 +175,7 @@ def download_contract_histories(selected: pd.DataFrame, cfg: SelectionConfig) ->
     out_parts = []
 
     for i, contract in enumerate(contracts, 1):
-        print(f"[{i}/{len(contracts)}] {contract}")
+        print(f"[{i}/{len(contracts)}] {contract}") 
         tk = yf.Ticker(contract)
 
         hist = safe_history(tk, start=cfg.start, end=cfg.end)
@@ -189,7 +189,7 @@ def download_contract_histories(selected: pd.DataFrame, cfg: SelectionConfig) ->
         hist = hist.rename(columns={date_col: "date"})
 
         m = meta.get(contract, {})
-        part = pd.DataFrame(
+        part = pd.DataFrame( #established pandas dataframe to allocate data
             {
                 "date": pd.to_datetime(hist["date"]).dt.tz_localize(None),
                 "contract": contract,
@@ -224,7 +224,7 @@ def build_dataset(
 
     selected_parts = []
 
-    for sym in cfg.underlyings:
+    for sym in cfg.underlyings: #consider edge cases if empty
         print(f"\nSelecting contracts for {sym} ...")
         sel = select_contracts_for_underlying(sym, cfg)
         print(f"  selected: {len(sel)}")
