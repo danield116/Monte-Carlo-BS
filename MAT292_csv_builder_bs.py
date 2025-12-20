@@ -1,20 +1,16 @@
-"""
-Reproducible options-history CSV builder using yfinance (no premium APIs).
+'''
+Notes for TA/Profs:
+this script builds a reproducible dataset of option contract histories from yfinance
+to reproduce the exact same graph as the report, please do not use this script.
+Reason being that some contracts may have expired since the csv in the git repo was built,
+and yfinance can't return expired contracts.
+Please use the csv files in the repo directly for reproducing the report results.
+However, feel free to use this script to build another dataset for anything else.
 
-Underlyings: TSLA, TLT, JNJ, UNH
+Regards,
+Group 39.
+'''
 
-Outputs:
-  1) selected_contracts.csv
-     - the exact option contracts chosen (reproducibility anchor)
-  2) options_history_all.csv
-     - stacked daily OHLCV for those contracts (your plotting / testing dataset)
-  3) dataset_metadata.json
-     - parameters used to build the dataset
-
-Important limitation:
-- This is NOT "historical chain snapshots by past date".
-- It's historical price series for a fixed set of contracts chosen today.
-"""
 
 from __future__ import annotations
 
@@ -31,43 +27,27 @@ import yfinance as yf
 BASE_DIR = Path(__file__).resolve().parent
 
 
-# ----------------------------- Config -----------------------------
 
 @dataclass(frozen=True)
 class SelectionConfig:
     underlyings: Tuple[str, ...] = ("TSLA", "TLT", "JNJ", "UNH")
-
-    # Variety: pick expiries closest to these DTE targets (days-to-expiry)
     target_dtes: Tuple[int, ...] = (14, 30, 60, 120)
-
-    # Variety: pick strikes near S*(1±m) for each m, plus ATM (m=0)
     moneyness: Tuple[float, ...] = (0.00, 0.05, 0.10, 0.20)
-
-    # Cap per underlying after dedup (keeps runtime reasonable)
     max_contracts_per_underlying: int = 60
-
-    # Requested historical window for each contract (actual available will be shorter)
     start: str = "2024-01-01"
-    end: Optional[str] = "2025-12-15"  # FIXED END DATE for reproducibility; set None for "latest"
-
-    # Throttle requests a bit to reduce transient issues
+    end: Optional[str] = "2025-12-15" 
     sleep_s: float = 0.35
 
 
-# ----------------------------- Helpers -----------------------------
+# helper functions
 
 def nearest_value(values: np.ndarray, target: float) -> float:
-    """Return the array element closest to target."""
     if values.size == 0:
         raise ValueError("Empty strike list.")
     return float(values[np.argmin(np.abs(values - target))])
 
 
 def pick_expiration_by_dte(expirations, target_dte, today: pd.Timestamp) -> Optional[str]:
-    """
-    Pick the expiration date whose DTE (days-to-expiry) is closest to target_dte,
-    using a provided 'today' anchor for reproducibility.
-    """
     if not expirations:
         return None
 
@@ -76,10 +56,8 @@ def pick_expiration_by_dte(expirations, target_dte, today: pd.Timestamp) -> Opti
     if len(exp_dt) == 0:
         return None
 
-    # TimedeltaIndex -> use .days (no .dt)
     dtes = (exp_dt - today).days
 
-    # Keep future expirations only
     mask = dtes >= 0
     exp_dt = exp_dt[mask]
     dtes = dtes[mask]
@@ -89,12 +67,10 @@ def pick_expiration_by_dte(expirations, target_dte, today: pd.Timestamp) -> Opti
 
     idx = int(np.argmin(np.abs(dtes - target_dte)))
 
-    # DatetimeIndex -> use [] indexing (no .iloc)
     return exp_dt[idx].strftime("%Y-%m-%d")
 
 
 def safe_history(ticker: yf.Ticker, start: str, end: Optional[str]) -> pd.DataFrame:
-    """yfinance history wrapper that fails gracefully."""
     try:
         df = ticker.history(start=start, end=end, auto_adjust=False)
         if df is None or df.empty:
@@ -105,24 +81,21 @@ def safe_history(ticker: yf.Ticker, start: str, end: Optional[str]) -> pd.DataFr
         return pd.DataFrame()
 
 
-# ----------------------------- Selection -----------------------------
+# select contracts
 
 def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFrame:
-    """
+    '''
     Select a reproducible set of option contracts for one underlying, based on:
       - DTE targets (14/30/60/120)
       - moneyness targets (ATM, 5%, 10%, 20% away)
-    """
+    '''
     t = yf.Ticker(sym)
     expirations = list(getattr(t, "options", []) or [])
     if not expirations:
         return pd.DataFrame(columns=["underlying", "expiration", "right", "strike", "contractSymbol"])
 
-    # Anchor selection date for reproducibility:
-    # If cfg.end is fixed, use that date; else fall back to "today".
     today = pd.to_datetime(cfg.end).normalize() if cfg.end else pd.Timestamp.today().normalize()
 
-    # Spot: use last close from recent window (more stable than intraday)
     spot_window_start = (today - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
     spot_hist = safe_history(t, start=spot_window_start, end=None)
     if spot_hist.empty:
@@ -188,7 +161,6 @@ def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFr
     if df.empty:
         return df
 
-    # Sort to keep "most useful" contracts if we hit the cap
     df["spot"] = spot
     df["abs_moneyness"] = np.abs(df["strike"] / df["spot"] - 1.0)
     df = df.sort_values(["expiration", "abs_moneyness", "right"]).head(cfg.max_contracts_per_underlying)
@@ -196,12 +168,7 @@ def select_contracts_for_underlying(sym: str, cfg: SelectionConfig) -> pd.DataFr
     return df
 
 
-# ----------------------------- Download histories -----------------------------
-
 def download_contract_histories(selected: pd.DataFrame, cfg: SelectionConfig) -> pd.DataFrame:
-    """
-    For each selected contractSymbol, download daily OHLCV history and stack into one table.
-    """
     meta = selected.set_index("contractSymbol")[["underlying", "expiration", "right", "strike"]].to_dict("index")
     contracts = selected["contractSymbol"].drop_duplicates().tolist()
 
@@ -248,22 +215,13 @@ def download_contract_histories(selected: pd.DataFrame, cfg: SelectionConfig) ->
     df_all = df_all.sort_values(["underlying", "contract", "date"])
     return df_all
 
-
-# ----------------------------- Orchestrator -----------------------------
-
 def build_dataset(
     cfg: SelectionConfig,
     selected_csv=BASE_DIR / "selected_contracts.csv",
     history_csv=BASE_DIR / "options_history_all.csv",
     metadata_json=BASE_DIR / "dataset_metadata.json",
 ) -> None:
-    """
-    End-to-end build:
-      1) select contracts per underlying
-      2) save selected_contracts.csv
-      3) download per-contract histories and save options_history_all.csv
-      4) write dataset_metadata.json
-    """
+
     selected_parts = []
 
     for sym in cfg.underlyings:
@@ -284,7 +242,6 @@ def build_dataset(
     history.to_csv(history_csv, index=False)
     print(f"Saved -> {history_csv} ({len(history)} rows)")
 
-    # Metadata to make your dataset build auditable
     meta = asdict(cfg)
     meta["built_at"] = pd.Timestamp.now().isoformat()
     meta["num_selected_contracts"] = int(selected["contractSymbol"].nunique())
