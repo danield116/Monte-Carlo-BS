@@ -5,7 +5,7 @@ Here is the instruction to run the code:
 3) Change the compiler's directory to the directory with the CSV files and the code,
 4) Run the code (it might take a while for the code to plot all the graphs),
 5) Close the image tab to display the new ones.
-(optional) Use the MAT292_csv_builder.py code to generate your own dataset
+6) (optional) Use the MAT292_csv_builder.py code to generate your own dataset
 
 Important
 The MAT292_csv_builder.py will update your CSV file. 
