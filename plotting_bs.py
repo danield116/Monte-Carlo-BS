@@ -51,7 +51,7 @@ def lsm_american_gbm_cv(
 ):
     """
     algorithm:
-      - simulate many GBM paths
+      - simulate many GBM path
       - backward induction
       - at each time step, estimate continuation value by regressing future cashflows on basis functions of S_t
       - exercise if intrinsic >= estimated continuation value
@@ -80,12 +80,12 @@ def lsm_american_gbm_cv(
         S = S * np.exp(drift + vol * Z) # evolve all paths one step
         path[t + 1] = S
 
-    # G_{i,n} 
-    # Put: max(K - S, 0) and Call: max(S - K, 0)
+    # G_{i,n} for intrinsic price
+    # put: max(K - S, 0) and Call: max(S - K, 0)
     intrinsic = np.maximum(K - path, 0.0) if is_put else np.maximum(path - K, 0.0)
     cf = intrinsic[-1].copy()
 
-    # Backward induction (LSM)
+    # backward induction (LSM)
     for t in range(steps - 1, 0, -1):
 
         itm = intrinsic[t] > 0.0
@@ -102,7 +102,7 @@ def lsm_american_gbm_cv(
 
         lam = ridge_base * (basis_deg + 1) * (paths / max(n_itm, 1))**0.5
 
-        # beta = argmin ||A beta - Y||^2 + lam ||beta||^2
+        # method of regression var: beta = argmin ||A beta - Y||^2 + lam ||beta||^2 
         ATA = A.T @ A
         ATY = A.T @ Y
         beta = np.linalg.solve(ATA + lam * np.eye(ATA.shape[0]), ATY)
@@ -117,7 +117,7 @@ def lsm_american_gbm_cv(
 
     X_am = cf.copy() 
 
-    # control variate using the vanilla European BS price
+    # control variate using vanilla BS price
     Y_euro = intrinsic[-1] * np.exp(-r * T)
     bs_euro = bs_price_euro(S0, K, r, sigma, T, is_put=is_put)
     vy = float(np.var(Y_euro, ddof=1))
@@ -126,16 +126,15 @@ def lsm_american_gbm_cv(
         b = cov / vy
     else:
         b = 0.0
-    # Control variate adjusted estimator: X_cv = X_am + b*(E[Y] - Y)
+    # variate adjusted estimator
     X_cv = X_am + b * (bs_euro - Y_euro)
 
-    # Final point estimate and Monte Carlo standard error
     price_cv = float(np.mean(X_cv))
     se_cv = float(np.std(X_cv, ddof=1) / np.sqrt(paths))
     return price_cv, se_cv
 
 
-# CSV loading + “market price” choice
+# csv loading n market price choice
 
 
 def _pick_contract_column(df):
@@ -169,7 +168,7 @@ df = df.dropna(subset=["S", "expiration", "strike", "right", contract_col]).copy
 df["T_years"] = (df["expiration"] - df["date"]).dt.days.clip(lower=0) / 365.0
 df = df[df["T_years"] > 0].copy() # only keep rows with positive time to maturity
 
-# Choose market price column
+
 if "bid" in df.columns and "ask" in df.columns:
     df["mid"] = 0.5 * (df["bid"] + df["ask"])
     df = df.dropna(subset=["mid", "bid", "ask"]).copy()
@@ -180,19 +179,19 @@ if "bid" in df.columns and "ask" in df.columns:
     price_col = "mid"
     price_label = "Market mid (CSV)"
 else:
-    # If no bid/ask -> just use close price
+    # if no bid/ask -> just use close price
     df = df.dropna(subset=["close"]).copy()
     price_col = "close"
     price_label = "Market close (CSV)"
 
 
 
-# Contract picking + sigma calibration: match put volatility with call volatility 
+# pick contract n calinrate sigma: match put volatility with call volatility 
 
 r = 0.05
 SYMS = ["TSLA", "TLT", "JNJ", "UNH"]
 
-# Runtime/plot controls
+# runtime/plot controls
 MAX_POINTS = 140         
 DOT = 2                  
 LSM_STEPS = 55           
@@ -223,13 +222,12 @@ def calibrate_sigma_constant_contract(d_contract, is_put, train_frac=0.6):
     T = train["T_years"].astype(float).values
     mkt = train[price_col].astype(float).values # market price series
 
-    # Remove invalid entries
     mask = (S > 0) & (K > 0) & (T > 0) & np.isfinite(mkt) & (mkt > 0)
     S, T, mkt = S[mask], T[mask], mkt[mask]
 
     if len(mkt) < 12:
         return 0.30
-
+    
     def mse(sig):
         sig = float(sig)
 
@@ -276,7 +274,6 @@ def find_matching_call_series(sym, put_strike, put_exp):
     return d_call
 
 
-
 # build and show one plot for a symbol + right
 
 
@@ -315,7 +312,7 @@ def plot_one(sym, right):
             sigma_hat = calibrate_sigma_constant_contract(d_call, is_put=False, train_frac=TRAIN_FRAC)
             sigma_source = f"matched CALL (K≈{float(d_call['strike'].iloc[0]):.2f})"
         else:
-            # If no good call match, calibrate sigma on the put itself
+            # if no good call match, calibrate sigma on the put itself
             sigma_hat = calibrate_sigma_constant_contract(d, is_put=True, train_frac=TRAIN_FRAC)
             sigma_source = "PUT self (fallback)"
     else:
@@ -352,7 +349,7 @@ def plot_one(sym, right):
     nrmse_bs = float(np.sqrt(np.mean((bs_vals - mkt)**2)))/(mkt.max() - mkt.min())
     nrmse_lsm = float(np.sqrt(np.mean((lsm_vals - mkt)**2)))/(mkt.max() - mkt.min())
 
-    # Plot
+    # plot code
     plt.figure(figsize=(10, 5))
     plt.plot(xT, mkt, marker="o", markersize=DOT, linewidth=1.6, label=price_label)
     plt.plot(xT, bs_vals, marker="o", markersize=DOT, linewidth=1.6, label="European BS (const σ)")
@@ -363,7 +360,7 @@ def plot_one(sym, right):
     plt.xlabel("Time to maturity T (years)   (→ 0 = expiry)", fontsize = 13)
     plt.ylabel("Option price", fontsize = 13)
 
-    # Title with summary info
+    # title with summary info
     kind = "PUT" if is_put else "CALL"
     plt.title(
         f"{sym} {kind} | K={K:.2f} | exp={exp.date()} | σ̂={sigma_hat*100:.2f}% "
